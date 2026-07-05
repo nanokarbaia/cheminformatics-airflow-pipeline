@@ -1,0 +1,8 @@
+data_source molecule_pipeline:
+  type: postgres
+  host: local-db
+  port: 5432
+  username: postgres
+  password: 123456
+  database: postgres
+  schema: molecule_pipeline

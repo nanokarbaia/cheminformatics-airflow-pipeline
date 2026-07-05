@@ -1,0 +1,9 @@
+checks for molecular_properties:
+  - row_count > 0
+  - missing_count(molecule_id) = 0
+  - missing_count(dataset_id) = 0
+  - missing_count(generated_smiles) = 0
+  - missing_count(mol_weight) = 0
+  - missing_count(log_p) = 0
+  - missing_count(tpsa) = 0
+  - duplicate_count(molecule_id) = 0

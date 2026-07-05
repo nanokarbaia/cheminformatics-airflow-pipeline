@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+#lib/
+#lib64/
 parts/
 sdist/
 var/
@@ -216,3 +216,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Airflow / local runtime files
+logs/
+postgres_data/
+
+# Local environment files
+.env
+.envrc
+.venv/
+venv/
+
+# IDE files
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Airflow generated config
+config/*
+!config/.gitkeep
+
+# Keep plugins folder but ignore generated/plugin runtime files
+plugins/*
+!plugins/.gitkeep
