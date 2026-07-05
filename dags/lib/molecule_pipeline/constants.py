@@ -39,6 +39,9 @@ FEATURE_COLUMNS = [
     'aromatic_rings',
 ]
 
+# Input file columns
+SMILES_COLUMN = 'smiles'
+
 # Soda checks
 MOLECULE_DATA_SOURCE = 'molecule_pipeline'
 GENERATED_CHECKS_FILE = 'molecule_pipeline/checks_generated.yml'

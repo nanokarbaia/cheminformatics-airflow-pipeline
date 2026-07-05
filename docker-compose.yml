@@ -135,7 +135,7 @@ services:
     command:
       - -c
       - |
-        /usr/bin/mc config host add storage http://storage:9000 minio_access_key minio_secret_key
+        /usr/bin/mc alias set storage http://storage:9000 minio_access_key minio_secret_key
         /usr/bin/mc mb -p storage/bronze || true
 
   local-db:

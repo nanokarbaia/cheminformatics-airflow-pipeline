@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, Param
 from airflow.utils.trigger_rule import TriggerRule
 
@@ -9,6 +10,7 @@ from lib.molecule_pipeline.constants import (
     DEFAULT_N_CLUSTERS,
     DEFAULT_OVERWRITE,
 )
+from lib.molecule_pipeline.discovery import check_input_files, resolve_dataset
 from lib.utils.teams import send_teams_alert
 
 
@@ -36,8 +38,16 @@ with DAG(
 ) as dag:
     start_op = EmptyOperator(task_id='start')
 
-    resolve_dataset_op = EmptyOperator(task_id='resolve_dataset')
-    check_input_files_op = EmptyOperator(task_id='check_input_files')
+    resolve_dataset_op = PythonOperator(
+        task_id='resolve_dataset',
+        python_callable=resolve_dataset,
+    )
+
+    check_input_files_op = PythonOperator(
+        task_id='check_input_files',
+        python_callable=check_input_files,
+    )
+
     generate_molecules_op = EmptyOperator(task_id='generate_molecules')
     generated_quality_checks_op = EmptyOperator(task_id='generated_quality_checks')
     calculate_properties_op = EmptyOperator(task_id='calculate_properties')
