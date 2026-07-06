@@ -41,6 +41,7 @@ FEATURE_COLUMNS = [
 
 # Input file columns
 SMILES_COLUMN = 'smiles'
+GENERATED_SMILES_COLUMN = 'generated_smiles'
 
 # Soda checks
 MOLECULE_DATA_SOURCE = 'molecule_pipeline'
