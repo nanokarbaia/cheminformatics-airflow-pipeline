@@ -1,8 +1,0 @@
-checks for generated_molecules:
-  - row_count > 0
-  - missing_count(molecule_id) = 0
-  - missing_count(dataset_id) = 0
-  - missing_count(scaffold_smiles) = 0
-  - missing_count(r_group_smiles) = 0
-  - missing_count(generated_smiles) = 0
-  - duplicate_count(molecule_id) = 0

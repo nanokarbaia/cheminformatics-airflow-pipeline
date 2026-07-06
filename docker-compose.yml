@@ -17,7 +17,6 @@ x-airflow-common:
     AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
     AIRFLOW_CONN_AWS_S3: ${AIRFLOW_CONN_AWS_S3}
-    AIRFLOW_CONN_DWH_CONNECTION: ${AIRFLOW_CONN_DWH_CONNECTION}
     AIRFLOW_CONN_MSTEAMS_WEBHOOK: ${AIRFLOW_CONN_MSTEAMS_WEBHOOK}
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
@@ -26,7 +25,6 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
-    - ${AIRFLOW_PROJ_DIR:-.}/soda:/opt/airflow/soda
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -138,31 +136,6 @@ services:
         /usr/bin/mc alias set storage http://storage:9000 minio_access_key minio_secret_key
         /usr/bin/mc mb -p storage/bronze || true
 
-  local-db:
-    image: postgres:16
-    ports:
-      - "5435:5432"
-    volumes:
-      - local-db-volume:/var/lib/postgresql/data
-    environment:
-      POSTGRES_PASSWORD: 123456
-      POSTGRES_USER: postgres
-      POSTGRES_DB: postgres
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      interval: 10s
-      retries: 5
-      start_period: 5s
-
-  local-db-migrations:
-    build:
-      dockerfile: local-migrations.Dockerfile
-    depends_on:
-      local-db:
-        condition: service_healthy
-    restart: on-failure
-
 volumes:
   postgres-db-volume:
-  local-db-volume:
   minio-data-volume:
