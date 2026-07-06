@@ -2,7 +2,6 @@
 
 # Airflow connections
 S3_CONN_ID = 'aws_s3'
-DWH_CONN_ID = 'dwh_connection'
 
 # Object storage
 BRONZE_BUCKET = 'bronze'
@@ -12,16 +11,9 @@ OUTPUT_PREFIX = 'output'
 SCAFFOLDS_FILE_TEMPLATE = '{dataset_id}_scaffolds.csv'
 R_GROUPS_FILE_TEMPLATE = '{dataset_id}_r_groups.csv'
 
-GENERATED_FILE_TEMPLATE = 'output/{dataset_id}/generated_molecules.csv'
-PROPERTIES_FILE_TEMPLATE = 'output/{dataset_id}/molecular_properties.csv'
-CLUSTERED_FILE_TEMPLATE = 'output/{dataset_id}/clustered_molecules.csv'
-
-# Database
-PIPELINE_SCHEMA = 'molecule_pipeline'
-DATASET_RUNS_TABLE = 'dataset_runs'
-GENERATED_TABLE = 'generated_molecules'
-PROPERTIES_TABLE = 'molecular_properties'
-CLUSTERED_TABLE = 'clustered_molecules'
+GENERATED_FILE_TEMPLATE = f'{OUTPUT_PREFIX}/{{dataset_id}}/generated_molecules.csv'
+PROPERTIES_FILE_TEMPLATE = f'{OUTPUT_PREFIX}/{{dataset_id}}/molecular_properties.csv'
+CLUSTERED_FILE_TEMPLATE = f'{OUTPUT_PREFIX}/{{dataset_id}}/clustered_molecules.csv'
 
 # DAG defaults
 DEFAULT_OVERWRITE = False
@@ -39,12 +31,6 @@ FEATURE_COLUMNS = [
     'aromatic_rings',
 ]
 
-# Input file columns
+# Input and output file columns
 SMILES_COLUMN = 'smiles'
 GENERATED_SMILES_COLUMN = 'generated_smiles'
-
-# Soda checks
-MOLECULE_DATA_SOURCE = 'molecule_pipeline'
-GENERATED_CHECKS_FILE = 'molecule_pipeline/checks_generated.yml'
-PROPERTIES_CHECKS_FILE = 'molecule_pipeline/checks_properties.yml'
-CLUSTERED_CHECKS_FILE = 'molecule_pipeline/checks_clustered.yml'

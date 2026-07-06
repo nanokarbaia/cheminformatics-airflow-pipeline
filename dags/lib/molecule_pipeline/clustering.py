@@ -27,6 +27,15 @@ def _parse_bool(value: Any) -> bool:
     return str(value).strip().lower() == 'true'
 
 
+def _parse_positive_int(value: Any, default_value: int, parameter_name: str) -> int:
+    parsed_value = int(value or default_value)
+
+    if parsed_value < 1:
+        raise ValueError(f'{parameter_name} must be greater than or equal to 1.')
+
+    return parsed_value
+
+
 def _read_properties_from_s3(key: str) -> pd.DataFrame:
     logging.info('Reading molecular properties from s3://%s/%s', BRONZE_BUCKET, key)
 
@@ -72,6 +81,8 @@ def _read_properties_from_s3(key: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError('Molecular properties file is empty.')
 
+    df = df.copy()
+
     for column in FEATURE_COLUMNS:
         df[column] = pd.to_numeric(df[column], errors='coerce')
 
@@ -86,6 +97,24 @@ def _read_properties_from_s3(key: str) -> pd.DataFrame:
     logging.info('Loaded %s molecules with molecular properties.', len(df))
 
     return df
+
+
+def _get_actual_n_clusters(
+    properties_df: pd.DataFrame,
+    requested_n_clusters: int,
+) -> int:
+    distinct_feature_rows = properties_df[FEATURE_COLUMNS].drop_duplicates().shape[0]
+
+    actual_n_clusters = min(
+        requested_n_clusters,
+        len(properties_df),
+        distinct_feature_rows,
+    )
+
+    if actual_n_clusters < 1:
+        raise ValueError('At least one valid feature row is required for clustering.')
+
+    return actual_n_clusters
 
 
 def _cluster_single_dataset(
@@ -136,7 +165,10 @@ def _cluster_single_dataset(
 
     properties_df = _read_properties_from_s3(properties_key)
 
-    actual_n_clusters = min(requested_n_clusters, len(properties_df))
+    actual_n_clusters = _get_actual_n_clusters(
+        properties_df=properties_df,
+        requested_n_clusters=requested_n_clusters,
+    )
 
     logging.info(
         'Actual clusters used for dataset_id=%s: %s',
@@ -152,7 +184,7 @@ def _cluster_single_dataset(
         n_init=10,
     )
 
-    properties_df['cluster_id'] = model.fit_predict(scaled_features)
+    properties_df['cluster_id'] = model.fit_predict(scaled_features).astype(int)
 
     output_buffer = io.StringIO()
     properties_df.to_csv(output_buffer, index=False)
@@ -165,8 +197,16 @@ def _cluster_single_dataset(
         replace=True,
     )
 
-    logging.info('Clustered molecules for dataset_id=%s: %s', dataset_id, len(properties_df))
-    logging.info('Uploaded clustered molecules to s3://%s/%s', BRONZE_BUCKET, clustered_key)
+    logging.info(
+        'Clustered molecules for dataset_id=%s: %s',
+        dataset_id,
+        len(properties_df),
+    )
+    logging.info(
+        'Uploaded clustered molecules to s3://%s/%s',
+        BRONZE_BUCKET,
+        clustered_key,
+    )
 
     return {
         **dataset_metadata,
@@ -199,11 +239,12 @@ def cluster_molecules(**context) -> dict[str, Any]:
             'datasets': [],
         }
 
-    requested_n_clusters = int(context['params'].get('n_clusters') or DEFAULT_N_CLUSTERS)
+    requested_n_clusters = _parse_positive_int(
+        value=context['params'].get('n_clusters'),
+        default_value=DEFAULT_N_CLUSTERS,
+        parameter_name='n_clusters',
+    )
     overwrite = _parse_bool(context['params'].get('overwrite', False))
-
-    if requested_n_clusters < 1:
-        raise ValueError('n_clusters must be greater than or equal to 1.')
 
     processed_datasets = [
         _cluster_single_dataset(

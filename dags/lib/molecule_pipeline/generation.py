@@ -21,6 +21,22 @@ from lib.molecule_pipeline.constants import (
 from lib.utils.s3 import download_object, object_exists, upload_bytes
 
 
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    return str(value).strip().lower() == 'true'
+
+
+def _parse_positive_int(value: Any, default_value: int, parameter_name: str) -> int:
+    parsed_value = int(value or default_value)
+
+    if parsed_value < 1:
+        raise ValueError(f'{parameter_name} must be greater than or equal to 1.')
+
+    return parsed_value
+
+
 def _read_smiles_from_s3(key: str) -> list[str]:
     logging.info('Reading SMILES file from s3://%s/%s', BRONZE_BUCKET, key)
 
@@ -56,7 +72,11 @@ def _read_smiles_from_s3(key: str) -> list[str]:
     return smiles_values
 
 
-def _get_single_dummy_attachment(mol: Chem.Mol, smiles: str, molecule_type: str) -> tuple[int, int]:
+def _get_single_dummy_attachment(
+    mol: Chem.Mol,
+    smiles: str,
+    molecule_type: str,
+) -> tuple[int, int]:
     dummy_atoms = [
         atom.GetIdx()
         for atom in mol.GetAtoms()
@@ -166,7 +186,8 @@ def _generate_single_dataset(
     ) and not overwrite:
         logging.info(
             'Generated molecules output already exists and overwrite=False. '
-            'Skipping generation: s3://%s/%s',
+            'Skipping generation for dataset_id=%s: s3://%s/%s',
+            dataset_id,
             BRONZE_BUCKET,
             generated_key,
         )
@@ -175,6 +196,7 @@ def _generate_single_dataset(
             **dataset_metadata,
             'generated_key': generated_key,
             'generated_count': None,
+            'failed_generation_count': None,
             'generation_skipped': True,
         }
 
@@ -189,7 +211,11 @@ def _generate_single_dataset(
         start=1,
     ):
         if len(rows) >= max_molecules:
-            logging.info('Reached max_molecules limit: %s', max_molecules)
+            logging.info(
+                'Reached max_molecules limit for dataset_id=%s: %s',
+                dataset_id,
+                max_molecules,
+            )
             break
 
         try:
@@ -200,7 +226,9 @@ def _generate_single_dataset(
         except Exception as exc:
             failed_combinations += 1
             logging.warning(
-                'Failed to generate molecule for scaffold=%s and r_group=%s. Error: %s',
+                'Failed to generate molecule for dataset_id=%s, scaffold=%s, '
+                'r_group=%s. Error: %s',
+                dataset_id,
                 scaffold_smiles,
                 r_group_smiles,
                 exc,
@@ -276,14 +304,12 @@ def generate_molecules(**context) -> dict[str, Any]:
             'datasets': [],
         }
 
-    max_molecules = int(context['params'].get('max_molecules') or DEFAULT_MAX_MOLECULES)
-
-    overwrite_param = context['params'].get('overwrite', False)
-    overwrite = (
-        overwrite_param
-        if isinstance(overwrite_param, bool)
-        else str(overwrite_param).strip().lower() == 'true'
+    max_molecules = _parse_positive_int(
+        value=context['params'].get('max_molecules'),
+        default_value=DEFAULT_MAX_MOLECULES,
+        parameter_name='max_molecules',
     )
+    overwrite = _parse_bool(context['params'].get('overwrite', False))
 
     processed_datasets = [
         _generate_single_dataset(

@@ -7,7 +7,6 @@ x-airflow-common:
     AIRFLOW__API__BASE_URL: http://airflow-webserver:8080
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
@@ -126,14 +125,20 @@ services:
 
   storage-init:
     build:
+      context: .
       dockerfile: local-storage-init.Dockerfile
     depends_on:
       storage:
         condition: service_started
+    restart: on-failure
     command:
       - -c
       - |
-        /usr/bin/mc alias set storage http://storage:9000 minio_access_key minio_secret_key
+        until /usr/bin/mc alias set storage http://storage:9000 minio_access_key minio_secret_key; do
+          echo "Waiting for MinIO..."
+          sleep 2
+        done
+
         /usr/bin/mc mb -p storage/bronze || true
 
 volumes:

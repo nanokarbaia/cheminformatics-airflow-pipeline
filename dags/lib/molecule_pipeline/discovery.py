@@ -22,7 +22,7 @@ from lib.utils.s3 import download_object, list_keys, object_exists
 
 
 DATASET_FILE_PATTERN = re.compile(
-    rf'^{INPUT_PREFIX}/(.+)_(scaffolds|r_groups)\.csv$'
+    rf'^{re.escape(INPUT_PREFIX)}/(.+)_(scaffolds|r_groups)\.csv$'
 )
 
 
@@ -31,6 +31,26 @@ def _parse_bool(value: Any) -> bool:
         return value
 
     return str(value).strip().lower() == 'true'
+
+
+def _normalize_dataset_id(dataset_id: Any) -> str | None:
+    """
+    Normalize dataset_id from Airflow params.
+
+    Treat empty string, "null", and "none" as not provided.
+    """
+    if dataset_id is None:
+        return None
+
+    normalized_dataset_id = str(dataset_id).strip()
+
+    if not normalized_dataset_id:
+        return None
+
+    if normalized_dataset_id.lower() in {'null', 'none'}:
+        return None
+
+    return normalized_dataset_id
 
 
 def _build_dataset_metadata(dataset_id: str) -> dict[str, Any]:
@@ -59,6 +79,10 @@ def _discover_dataset_pairs(overwrite: bool) -> list[dict[str, Any]]:
     datasets: dict[str, dict[str, str]] = {}
 
     for key in keys:
+        if key.endswith('/'):
+            logging.info('Skipping folder placeholder object: %s', key)
+            continue
+
         match = DATASET_FILE_PATTERN.match(key)
 
         if not match:
@@ -101,14 +125,7 @@ def _discover_dataset_pairs(overwrite: bool) -> list[dict[str, Any]]:
             )
             continue
 
-        complete_datasets.append(
-            {
-                'dataset_id': dataset_id,
-                'bucket_name': BRONZE_BUCKET,
-                'scaffolds_key': scaffolds_key,
-                'r_groups_key': r_groups_key,
-            }
-        )
+        complete_datasets.append(_build_dataset_metadata(dataset_id))
 
     logging.info('Datasets selected for processing: %s', len(complete_datasets))
 
@@ -122,11 +139,8 @@ def resolve_dataset(**context) -> dict[str, Any]:
     If dataset_id is provided, process only that dataset.
     If dataset_id is not provided, discover all complete input file pairs in S3/MinIO.
     """
-    dataset_id = context['params'].get('dataset_id')
+    dataset_id = _normalize_dataset_id(context['params'].get('dataset_id'))
     overwrite = _parse_bool(context['params'].get('overwrite', False))
-
-    if dataset_id:
-        dataset_id = str(dataset_id).strip()
 
     if dataset_id:
         dataset_metadata = _build_dataset_metadata(dataset_id)
@@ -255,8 +269,14 @@ def check_input_files(**context) -> dict[str, Any]:
         scaffolds_df = _read_csv_from_s3(scaffolds_key)
         r_groups_df = _read_csv_from_s3(r_groups_key)
 
-        scaffolds_count = _validate_smiles_file(scaffolds_df, 'scaffolds file')
-        r_groups_count = _validate_smiles_file(r_groups_df, 'r_groups file')
+        scaffolds_count = _validate_smiles_file(
+            scaffolds_df,
+            f'scaffolds file ({scaffolds_key})',
+        )
+        r_groups_count = _validate_smiles_file(
+            r_groups_df,
+            f'R-groups file ({r_groups_key})',
+        )
 
         logging.info(
             'Validated dataset_id=%s. Scaffolds rows: %s, R-groups rows: %s',

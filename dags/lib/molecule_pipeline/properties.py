@@ -109,6 +109,20 @@ def _calculate_properties(smiles: str) -> dict[str, Any]:
     }
 
 
+def _get_generated_smiles(row: dict[str, Any]) -> str:
+    generated_smiles = row.get(GENERATED_SMILES_COLUMN)
+
+    if pd.isna(generated_smiles):
+        raise ValueError('generated_smiles is missing.')
+
+    generated_smiles = str(generated_smiles).strip()
+
+    if not generated_smiles:
+        raise ValueError('generated_smiles is empty.')
+
+    return generated_smiles
+
+
 def _calculate_properties_for_single_dataset(
     dataset_metadata: dict[str, Any],
     overwrite: bool,
@@ -139,6 +153,7 @@ def _calculate_properties_for_single_dataset(
             **dataset_metadata,
             'properties_key': properties_key,
             'properties_count': None,
+            'failed_properties_count': None,
             'properties_skipped': True,
         }
 
@@ -158,17 +173,16 @@ def _calculate_properties_for_single_dataset(
     failed_properties_count = 0
 
     for row in generated_df.to_dict(orient='records'):
-        generated_smiles = str(row[GENERATED_SMILES_COLUMN]).strip()
-
         try:
+            generated_smiles = _get_generated_smiles(row)
             properties = _calculate_properties(generated_smiles)
         except Exception as exc:
             failed_properties_count += 1
             logging.warning(
-                'Failed to calculate properties for dataset_id=%s, molecule_id=%s, smiles=%s. Error: %s',
+                'Failed to calculate properties for dataset_id=%s, molecule_id=%s. '
+                'Error: %s',
                 dataset_id,
                 row.get('molecule_id'),
-                generated_smiles,
                 exc,
             )
             continue
@@ -203,9 +217,21 @@ def _calculate_properties_for_single_dataset(
         replace=True,
     )
 
-    logging.info('Calculated properties for dataset_id=%s: %s molecules.', dataset_id, len(output_df))
-    logging.info('Failed property calculations for dataset_id=%s: %s', dataset_id, failed_properties_count)
-    logging.info('Uploaded molecular properties to s3://%s/%s', BRONZE_BUCKET, properties_key)
+    logging.info(
+        'Calculated properties for dataset_id=%s: %s molecules.',
+        dataset_id,
+        len(output_df),
+    )
+    logging.info(
+        'Failed property calculations for dataset_id=%s: %s',
+        dataset_id,
+        failed_properties_count,
+    )
+    logging.info(
+        'Uploaded molecular properties to s3://%s/%s',
+        BRONZE_BUCKET,
+        properties_key,
+    )
 
     return {
         **dataset_metadata,
