@@ -14,6 +14,11 @@ from lib.molecule_pipeline.clustering import cluster_molecules
 from lib.molecule_pipeline.discovery import check_input_files, resolve_dataset
 from lib.molecule_pipeline.generation import generate_molecules
 from lib.molecule_pipeline.properties import calculate_properties
+from lib.molecule_pipeline.quality import (
+    check_clustered_molecules,
+    check_generated_molecules,
+    check_molecular_properties,
+)
 from lib.utils.teams import send_teams_alert
 
 
@@ -56,21 +61,30 @@ with DAG(
         python_callable=generate_molecules,
     )
 
-    generated_quality_checks_op = EmptyOperator(task_id='generated_quality_checks')
+    generated_quality_checks_op = PythonOperator(
+        task_id='generated_quality_checks',
+        python_callable=check_generated_molecules,
+    )
 
     calculate_properties_op = PythonOperator(
         task_id='calculate_properties',
         python_callable=calculate_properties,
     )
 
-    properties_quality_checks_op = EmptyOperator(task_id='properties_quality_checks')
+    properties_quality_checks_op = PythonOperator(
+        task_id='properties_quality_checks',
+        python_callable=check_molecular_properties,
+    )
 
     cluster_molecules_op = PythonOperator(
         task_id='cluster_molecules',
         python_callable=cluster_molecules,
     )
 
-    clustered_quality_checks_op = EmptyOperator(task_id='clustered_quality_checks')
+    clustered_quality_checks_op = PythonOperator(
+        task_id='clustered_quality_checks',
+        python_callable=check_clustered_molecules,
+    )
 
     finish_op = EmptyOperator(
         task_id='finish',
