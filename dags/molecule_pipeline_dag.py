@@ -10,6 +10,7 @@ from lib.molecule_pipeline.constants import (
     DEFAULT_N_CLUSTERS,
     DEFAULT_OVERWRITE,
 )
+from lib.molecule_pipeline.clustering import cluster_molecules
 from lib.molecule_pipeline.discovery import check_input_files, resolve_dataset
 from lib.molecule_pipeline.generation import generate_molecules
 from lib.molecule_pipeline.properties import calculate_properties
@@ -63,7 +64,12 @@ with DAG(
     )
 
     properties_quality_checks_op = EmptyOperator(task_id='properties_quality_checks')
-    cluster_molecules_op = EmptyOperator(task_id='cluster_molecules')
+
+    cluster_molecules_op = PythonOperator(
+        task_id='cluster_molecules',
+        python_callable=cluster_molecules,
+    )
+
     clustered_quality_checks_op = EmptyOperator(task_id='clustered_quality_checks')
 
     finish_op = EmptyOperator(
