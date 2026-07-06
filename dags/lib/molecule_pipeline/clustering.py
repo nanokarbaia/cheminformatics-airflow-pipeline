@@ -88,28 +88,14 @@ def _read_properties_from_s3(key: str) -> pd.DataFrame:
     return df
 
 
-def cluster_molecules(**context) -> dict[str, Any]:
-    """
-    Cluster molecules using K-means based on calculated molecular properties.
-
-    This task reads molecular_properties.csv from S3/MinIO, writes one output file,
-    and only returns metadata through XCom.
-    """
-    task_instance = context['ti']
-    properties_metadata = task_instance.xcom_pull(task_ids='calculate_properties')
-
-    if not properties_metadata:
-        raise ValueError('Could not find metadata from calculate_properties task.')
-
-    dataset_id = properties_metadata['dataset_id']
-    properties_key = properties_metadata['properties_key']
+def _cluster_single_dataset(
+    dataset_metadata: dict[str, Any],
+    requested_n_clusters: int,
+    overwrite: bool,
+) -> dict[str, Any]:
+    dataset_id = dataset_metadata['dataset_id']
+    properties_key = dataset_metadata['properties_key']
     clustered_key = CLUSTERED_FILE_TEMPLATE.format(dataset_id=dataset_id)
-
-    requested_n_clusters = int(context['params'].get('n_clusters') or DEFAULT_N_CLUSTERS)
-    overwrite = _parse_bool(context['params'].get('overwrite', False))
-
-    if requested_n_clusters < 1:
-        raise ValueError('n_clusters must be greater than or equal to 1.')
 
     logging.info('Starting molecule clustering for dataset_id: %s', dataset_id)
     logging.info('Input file: s3://%s/%s', BRONZE_BUCKET, properties_key)
@@ -124,13 +110,14 @@ def cluster_molecules(**context) -> dict[str, Any]:
     ) and not overwrite:
         logging.info(
             'Clustered molecules output already exists and overwrite=False. '
-            'Skipping clustering: s3://%s/%s',
+            'Skipping clustering for dataset_id=%s: s3://%s/%s',
+            dataset_id,
             BRONZE_BUCKET,
             clustered_key,
         )
 
         return {
-            **properties_metadata,
+            **dataset_metadata,
             'clustered_key': clustered_key,
             'clustered_count': None,
             'cluster_count': None,
@@ -143,14 +130,19 @@ def cluster_molecules(**context) -> dict[str, Any]:
         aws_conn_id=S3_CONN_ID,
     ):
         raise FileNotFoundError(
-            f'Molecular properties file does not exist: s3://{BRONZE_BUCKET}/{properties_key}'
+            f'Molecular properties file does not exist for dataset_id={dataset_id}: '
+            f's3://{BRONZE_BUCKET}/{properties_key}'
         )
 
     properties_df = _read_properties_from_s3(properties_key)
 
     actual_n_clusters = min(requested_n_clusters, len(properties_df))
 
-    logging.info('Actual clusters used: %s', actual_n_clusters)
+    logging.info(
+        'Actual clusters used for dataset_id=%s: %s',
+        dataset_id,
+        actual_n_clusters,
+    )
 
     scaled_features = StandardScaler().fit_transform(properties_df[FEATURE_COLUMNS])
 
@@ -173,13 +165,56 @@ def cluster_molecules(**context) -> dict[str, Any]:
         replace=True,
     )
 
-    logging.info('Clustered molecules: %s', len(properties_df))
+    logging.info('Clustered molecules for dataset_id=%s: %s', dataset_id, len(properties_df))
     logging.info('Uploaded clustered molecules to s3://%s/%s', BRONZE_BUCKET, clustered_key)
 
     return {
-        **properties_metadata,
+        **dataset_metadata,
         'clustered_key': clustered_key,
         'clustered_count': len(properties_df),
         'cluster_count': actual_n_clusters,
         'clustering_skipped': False,
+    }
+
+
+def cluster_molecules(**context) -> dict[str, Any]:
+    """
+    Cluster molecules using K-means based on calculated molecular properties.
+
+    This task supports one manually selected dataset or multiple automatically discovered datasets.
+    It writes one output file per dataset and only returns metadata through XCom.
+    """
+    task_instance = context['ti']
+    properties_metadata = task_instance.xcom_pull(task_ids='calculate_properties')
+
+    if not properties_metadata:
+        raise ValueError('Could not find metadata from calculate_properties task.')
+
+    datasets = properties_metadata.get('datasets', [])
+
+    if not datasets:
+        logging.info('No datasets selected for clustering.')
+        return {
+            **properties_metadata,
+            'datasets': [],
+        }
+
+    requested_n_clusters = int(context['params'].get('n_clusters') or DEFAULT_N_CLUSTERS)
+    overwrite = _parse_bool(context['params'].get('overwrite', False))
+
+    if requested_n_clusters < 1:
+        raise ValueError('n_clusters must be greater than or equal to 1.')
+
+    processed_datasets = [
+        _cluster_single_dataset(
+            dataset_metadata=dataset_metadata,
+            requested_n_clusters=requested_n_clusters,
+            overwrite=overwrite,
+        )
+        for dataset_metadata in datasets
+    ]
+
+    return {
+        **properties_metadata,
+        'datasets': processed_datasets,
     }

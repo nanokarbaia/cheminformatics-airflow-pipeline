@@ -4,53 +4,159 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from typing import Any
 
 import pandas as pd
 
 from lib.molecule_pipeline.constants import (
     BRONZE_BUCKET,
+    CLUSTERED_FILE_TEMPLATE,
     INPUT_PREFIX,
     R_GROUPS_FILE_TEMPLATE,
     S3_CONN_ID,
     SCAFFOLDS_FILE_TEMPLATE,
     SMILES_COLUMN,
 )
-from lib.utils.s3 import download_object, object_exists
+from lib.utils.s3 import download_object, list_keys, object_exists
 
 
-def resolve_dataset(**context) -> dict[str, Any]:
-    """
-    Resolve dataset_id from DAG params and build expected input file keys.
+DATASET_FILE_PATTERN = re.compile(
+    rf'^{INPUT_PREFIX}/(.+)_(scaffolds|r_groups)\.csv$'
+)
 
-    Expected files:
-        input/<dataset_id>_scaffolds.csv
-        input/<dataset_id>_r_groups.csv
-    """
-    dataset_id = context['params'].get('dataset_id')
 
-    if not dataset_id:
-        raise ValueError(
-            'dataset_id is required. Please trigger the DAG with a dataset_id parameter.'
-        )
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
 
-    dataset_id = str(dataset_id).strip()
+    return str(value).strip().lower() == 'true'
 
-    if not dataset_id:
-        raise ValueError('dataset_id cannot be empty.')
 
+def _build_dataset_metadata(dataset_id: str) -> dict[str, Any]:
     scaffolds_key = f'{INPUT_PREFIX}/{SCAFFOLDS_FILE_TEMPLATE.format(dataset_id=dataset_id)}'
     r_groups_key = f'{INPUT_PREFIX}/{R_GROUPS_FILE_TEMPLATE.format(dataset_id=dataset_id)}'
-
-    logging.info('Resolved dataset_id: %s', dataset_id)
-    logging.info('Expected scaffolds file: s3://%s/%s', BRONZE_BUCKET, scaffolds_key)
-    logging.info('Expected R-groups file: s3://%s/%s', BRONZE_BUCKET, r_groups_key)
 
     return {
         'dataset_id': dataset_id,
         'bucket_name': BRONZE_BUCKET,
         'scaffolds_key': scaffolds_key,
         'r_groups_key': r_groups_key,
+    }
+
+
+def _discover_dataset_pairs(overwrite: bool) -> list[dict[str, Any]]:
+    logging.info('Discovering dataset pairs in s3://%s/%s/', BRONZE_BUCKET, INPUT_PREFIX)
+
+    keys = list_keys(
+        prefix=f'{INPUT_PREFIX}/',
+        bucket_name=BRONZE_BUCKET,
+        aws_conn_id=S3_CONN_ID,
+    )
+
+    logging.info('Found %s objects under input prefix.', len(keys))
+
+    datasets: dict[str, dict[str, str]] = {}
+
+    for key in keys:
+        match = DATASET_FILE_PATTERN.match(key)
+
+        if not match:
+            logging.info('Skipping non-matching input object: %s', key)
+            continue
+
+        dataset_id, file_type = match.groups()
+        datasets.setdefault(dataset_id, {})[file_type] = key
+
+    complete_datasets = []
+
+    for dataset_id, files in sorted(datasets.items()):
+        scaffolds_key = files.get('scaffolds')
+        r_groups_key = files.get('r_groups')
+
+        if not scaffolds_key or not r_groups_key:
+            logging.warning(
+                'Skipping dataset_id=%s because file pair is incomplete. Files: %s',
+                dataset_id,
+                files,
+            )
+            continue
+
+        clustered_key = CLUSTERED_FILE_TEMPLATE.format(dataset_id=dataset_id)
+
+        if (
+            object_exists(
+                key=clustered_key,
+                bucket_name=BRONZE_BUCKET,
+                aws_conn_id=S3_CONN_ID,
+            )
+            and not overwrite
+        ):
+            logging.info(
+                'Skipping dataset_id=%s because clustered output already exists '
+                'and overwrite=False: s3://%s/%s',
+                dataset_id,
+                BRONZE_BUCKET,
+                clustered_key,
+            )
+            continue
+
+        complete_datasets.append(
+            {
+                'dataset_id': dataset_id,
+                'bucket_name': BRONZE_BUCKET,
+                'scaffolds_key': scaffolds_key,
+                'r_groups_key': r_groups_key,
+            }
+        )
+
+    logging.info('Datasets selected for processing: %s', len(complete_datasets))
+
+    return complete_datasets
+
+
+def resolve_dataset(**context) -> dict[str, Any]:
+    """
+    Resolve datasets to process.
+
+    If dataset_id is provided, process only that dataset.
+    If dataset_id is not provided, discover all complete input file pairs in S3/MinIO.
+    """
+    dataset_id = context['params'].get('dataset_id')
+    overwrite = _parse_bool(context['params'].get('overwrite', False))
+
+    if dataset_id:
+        dataset_id = str(dataset_id).strip()
+
+    if dataset_id:
+        dataset_metadata = _build_dataset_metadata(dataset_id)
+
+        logging.info('Resolved manually provided dataset_id: %s', dataset_id)
+        logging.info(
+            'Expected scaffolds file: s3://%s/%s',
+            BRONZE_BUCKET,
+            dataset_metadata['scaffolds_key'],
+        )
+        logging.info(
+            'Expected R-groups file: s3://%s/%s',
+            BRONZE_BUCKET,
+            dataset_metadata['r_groups_key'],
+        )
+
+        return {
+            'datasets': [dataset_metadata],
+            'discovery_mode': 'manual',
+        }
+
+    logging.info(
+        'No dataset_id was provided. Switching to automatic dataset discovery.'
+    )
+
+    datasets = _discover_dataset_pairs(overwrite=overwrite)
+
+    return {
+        'datasets': datasets,
+        'discovery_mode': 'automatic',
     }
 
 
@@ -66,7 +172,12 @@ def _read_csv_from_s3(key: str) -> pd.DataFrame:
     df = pd.read_csv(io.BytesIO(file_bytes))
     df.columns = [column.strip().lower() for column in df.columns]
 
-    logging.info('Downloaded %s with %s rows and columns: %s', key, len(df), list(df.columns))
+    logging.info(
+        'Downloaded %s with %s rows and columns: %s',
+        key,
+        len(df),
+        list(df.columns),
+    )
 
     return df
 
@@ -98,46 +209,71 @@ def check_input_files(**context) -> dict[str, Any]:
     Full CSV content is not passed through XCom.
     """
     task_instance = context['ti']
-    dataset_metadata = task_instance.xcom_pull(task_ids='resolve_dataset')
+    discovery_metadata = task_instance.xcom_pull(task_ids='resolve_dataset')
 
-    if not dataset_metadata:
-        raise ValueError('Could not find dataset metadata from resolve_dataset task.')
+    if not discovery_metadata:
+        raise ValueError('Could not find metadata from resolve_dataset task.')
 
-    scaffolds_key = dataset_metadata['scaffolds_key']
-    r_groups_key = dataset_metadata['r_groups_key']
+    datasets = discovery_metadata.get('datasets', [])
 
-    logging.info('Checking input files for dataset_id: %s', dataset_metadata['dataset_id'])
+    if not datasets:
+        logging.info('No datasets selected for processing. Nothing to validate.')
+        return {
+            **discovery_metadata,
+            'datasets': [],
+        }
 
-    missing_files = []
+    validated_datasets = []
 
-    for key in [scaffolds_key, r_groups_key]:
-        logging.info('Checking if file exists: s3://%s/%s', BRONZE_BUCKET, key)
+    for dataset_metadata in datasets:
+        dataset_id = dataset_metadata['dataset_id']
+        scaffolds_key = dataset_metadata['scaffolds_key']
+        r_groups_key = dataset_metadata['r_groups_key']
 
-        if not object_exists(
-            key=key,
-            bucket_name=BRONZE_BUCKET,
-            aws_conn_id=S3_CONN_ID,
-        ):
-            missing_files.append(key)
+        logging.info('Checking input files for dataset_id: %s', dataset_id)
 
-    if missing_files:
-        raise FileNotFoundError(
-            f'Missing required input file(s) in bucket "{BRONZE_BUCKET}": {missing_files}'
+        missing_files = []
+
+        for key in [scaffolds_key, r_groups_key]:
+            logging.info('Checking if file exists: s3://%s/%s', BRONZE_BUCKET, key)
+
+            if not object_exists(
+                key=key,
+                bucket_name=BRONZE_BUCKET,
+                aws_conn_id=S3_CONN_ID,
+            ):
+                missing_files.append(key)
+
+        if missing_files:
+            raise FileNotFoundError(
+                f'Missing required input file(s) in bucket "{BRONZE_BUCKET}" '
+                f'for dataset_id={dataset_id}: {missing_files}'
+            )
+
+        logging.info('All required input files exist for dataset_id: %s', dataset_id)
+
+        scaffolds_df = _read_csv_from_s3(scaffolds_key)
+        r_groups_df = _read_csv_from_s3(r_groups_key)
+
+        scaffolds_count = _validate_smiles_file(scaffolds_df, 'scaffolds file')
+        r_groups_count = _validate_smiles_file(r_groups_df, 'r_groups file')
+
+        logging.info(
+            'Validated dataset_id=%s. Scaffolds rows: %s, R-groups rows: %s',
+            dataset_id,
+            scaffolds_count,
+            r_groups_count,
         )
 
-    logging.info('All required input files exist.')
-
-    scaffolds_df = _read_csv_from_s3(scaffolds_key)
-    r_groups_df = _read_csv_from_s3(r_groups_key)
-
-    scaffolds_count = _validate_smiles_file(scaffolds_df, 'scaffolds file')
-    r_groups_count = _validate_smiles_file(r_groups_df, 'r_groups file')
-
-    logging.info('Validated scaffolds file. Valid rows: %s', scaffolds_count)
-    logging.info('Validated R-groups file. Valid rows: %s', r_groups_count)
+        validated_datasets.append(
+            {
+                **dataset_metadata,
+                'scaffolds_count': scaffolds_count,
+                'r_groups_count': r_groups_count,
+            }
+        )
 
     return {
-        **dataset_metadata,
-        'scaffolds_count': scaffolds_count,
-        'r_groups_count': r_groups_count,
+        **discovery_metadata,
+        'datasets': validated_datasets,
     }

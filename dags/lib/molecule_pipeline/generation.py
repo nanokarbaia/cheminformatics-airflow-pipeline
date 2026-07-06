@@ -143,25 +143,14 @@ def _build_molecule_id(
     return f'{dataset_id}_{hash_value}'
 
 
-def generate_molecules(**context) -> dict[str, Any]:
-    """
-    Generate molecules from scaffold and R-group input files.
-
-    This task writes one output file to S3/MinIO and only returns metadata through XCom.
-    """
-    task_instance = context['ti']
-    dataset_metadata = task_instance.xcom_pull(task_ids='check_input_files')
-
-    if not dataset_metadata:
-        raise ValueError('Could not find dataset metadata from check_input_files task.')
-
+def _generate_single_dataset(
+    dataset_metadata: dict[str, Any],
+    max_molecules: int,
+    overwrite: bool,
+) -> dict[str, Any]:
     dataset_id = dataset_metadata['dataset_id']
     scaffolds_key = dataset_metadata['scaffolds_key']
     r_groups_key = dataset_metadata['r_groups_key']
-
-    max_molecules = int(context['params'].get('max_molecules') or DEFAULT_MAX_MOLECULES)
-    overwrite_param = context['params'].get('overwrite', False)
-    overwrite = overwrite_param if isinstance(overwrite_param, bool) else str(overwrite_param).lower() == 'true'
 
     generated_key = GENERATED_FILE_TEMPLATE.format(dataset_id=dataset_id)
 
@@ -235,7 +224,8 @@ def generate_molecules(**context) -> dict[str, Any]:
 
     if not rows:
         raise ValueError(
-            'No molecules were generated. Please check scaffold and R-group SMILES values.'
+            f'No molecules were generated for dataset_id={dataset_id}. '
+            'Please check scaffold and R-group SMILES values.'
         )
 
     output_df = pd.DataFrame(rows)
@@ -251,8 +241,8 @@ def generate_molecules(**context) -> dict[str, Any]:
         replace=True,
     )
 
-    logging.info('Generated molecules: %s', len(output_df))
-    logging.info('Failed combinations: %s', failed_combinations)
+    logging.info('Generated molecules for dataset_id=%s: %s', dataset_id, len(output_df))
+    logging.info('Failed combinations for dataset_id=%s: %s', dataset_id, failed_combinations)
     logging.info('Uploaded generated molecules to s3://%s/%s', BRONZE_BUCKET, generated_key)
 
     return {
@@ -261,4 +251,50 @@ def generate_molecules(**context) -> dict[str, Any]:
         'generated_count': len(output_df),
         'failed_generation_count': failed_combinations,
         'generation_skipped': False,
+    }
+
+
+def generate_molecules(**context) -> dict[str, Any]:
+    """
+    Generate molecules from scaffold and R-group input files.
+
+    This task supports one manually selected dataset or multiple automatically discovered datasets.
+    It writes one output file per dataset and only returns metadata through XCom.
+    """
+    task_instance = context['ti']
+    validation_metadata = task_instance.xcom_pull(task_ids='check_input_files')
+
+    if not validation_metadata:
+        raise ValueError('Could not find metadata from check_input_files task.')
+
+    datasets = validation_metadata.get('datasets', [])
+
+    if not datasets:
+        logging.info('No datasets selected for molecule generation.')
+        return {
+            **validation_metadata,
+            'datasets': [],
+        }
+
+    max_molecules = int(context['params'].get('max_molecules') or DEFAULT_MAX_MOLECULES)
+
+    overwrite_param = context['params'].get('overwrite', False)
+    overwrite = (
+        overwrite_param
+        if isinstance(overwrite_param, bool)
+        else str(overwrite_param).strip().lower() == 'true'
+    )
+
+    processed_datasets = [
+        _generate_single_dataset(
+            dataset_metadata=dataset_metadata,
+            max_molecules=max_molecules,
+            overwrite=overwrite,
+        )
+        for dataset_metadata in datasets
+    ]
+
+    return {
+        **validation_metadata,
+        'datasets': processed_datasets,
     }

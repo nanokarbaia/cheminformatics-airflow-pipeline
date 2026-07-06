@@ -24,3 +24,10 @@ def object_exists(key, bucket_name, aws_conn_id):
         key,
         bucket_name=bucket_name,
     )
+
+
+def list_keys(prefix, bucket_name, aws_conn_id):
+    return S3Hook(aws_conn_id=aws_conn_id).list_keys(
+        bucket_name=bucket_name,
+        prefix=prefix,
+    ) or []

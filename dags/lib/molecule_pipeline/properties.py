@@ -109,24 +109,13 @@ def _calculate_properties(smiles: str) -> dict[str, Any]:
     }
 
 
-def calculate_properties(**context) -> dict[str, Any]:
-    """
-    Calculate molecular properties for generated molecules.
-
-    This task reads generated_molecules.csv from S3/MinIO, writes one output file,
-    and only returns metadata through XCom.
-    """
-    task_instance = context['ti']
-    generation_metadata = task_instance.xcom_pull(task_ids='generate_molecules')
-
-    if not generation_metadata:
-        raise ValueError('Could not find metadata from generate_molecules task.')
-
-    dataset_id = generation_metadata['dataset_id']
-    generated_key = generation_metadata['generated_key']
+def _calculate_properties_for_single_dataset(
+    dataset_metadata: dict[str, Any],
+    overwrite: bool,
+) -> dict[str, Any]:
+    dataset_id = dataset_metadata['dataset_id']
+    generated_key = dataset_metadata['generated_key']
     properties_key = PROPERTIES_FILE_TEMPLATE.format(dataset_id=dataset_id)
-
-    overwrite = _parse_bool(context['params'].get('overwrite', False))
 
     logging.info('Starting molecular property calculation for dataset_id: %s', dataset_id)
     logging.info('Input file: s3://%s/%s', BRONZE_BUCKET, generated_key)
@@ -140,13 +129,14 @@ def calculate_properties(**context) -> dict[str, Any]:
     ) and not overwrite:
         logging.info(
             'Molecular properties output already exists and overwrite=False. '
-            'Skipping calculation: s3://%s/%s',
+            'Skipping calculation for dataset_id=%s: s3://%s/%s',
+            dataset_id,
             BRONZE_BUCKET,
             properties_key,
         )
 
         return {
-            **generation_metadata,
+            **dataset_metadata,
             'properties_key': properties_key,
             'properties_count': None,
             'properties_skipped': True,
@@ -158,7 +148,8 @@ def calculate_properties(**context) -> dict[str, Any]:
         aws_conn_id=S3_CONN_ID,
     ):
         raise FileNotFoundError(
-            f'Generated molecules file does not exist: s3://{BRONZE_BUCKET}/{generated_key}'
+            f'Generated molecules file does not exist for dataset_id={dataset_id}: '
+            f's3://{BRONZE_BUCKET}/{generated_key}'
         )
 
     generated_df = _read_generated_molecules_from_s3(generated_key)
@@ -174,7 +165,8 @@ def calculate_properties(**context) -> dict[str, Any]:
         except Exception as exc:
             failed_properties_count += 1
             logging.warning(
-                'Failed to calculate properties for molecule_id=%s, smiles=%s. Error: %s',
+                'Failed to calculate properties for dataset_id=%s, molecule_id=%s, smiles=%s. Error: %s',
+                dataset_id,
                 row.get('molecule_id'),
                 generated_smiles,
                 exc,
@@ -194,7 +186,8 @@ def calculate_properties(**context) -> dict[str, Any]:
 
     if not rows:
         raise ValueError(
-            'No molecular properties were calculated. Please check generated SMILES values.'
+            f'No molecular properties were calculated for dataset_id={dataset_id}. '
+            'Please check generated SMILES values.'
         )
 
     output_df = pd.DataFrame(rows)
@@ -210,14 +203,52 @@ def calculate_properties(**context) -> dict[str, Any]:
         replace=True,
     )
 
-    logging.info('Calculated properties for %s molecules.', len(output_df))
-    logging.info('Failed property calculations: %s', failed_properties_count)
+    logging.info('Calculated properties for dataset_id=%s: %s molecules.', dataset_id, len(output_df))
+    logging.info('Failed property calculations for dataset_id=%s: %s', dataset_id, failed_properties_count)
     logging.info('Uploaded molecular properties to s3://%s/%s', BRONZE_BUCKET, properties_key)
 
     return {
-        **generation_metadata,
+        **dataset_metadata,
         'properties_key': properties_key,
         'properties_count': len(output_df),
         'failed_properties_count': failed_properties_count,
         'properties_skipped': False,
+    }
+
+
+def calculate_properties(**context) -> dict[str, Any]:
+    """
+    Calculate molecular properties for generated molecules.
+
+    This task supports one manually selected dataset or multiple automatically discovered datasets.
+    It writes one output file per dataset and only returns metadata through XCom.
+    """
+    task_instance = context['ti']
+    generation_metadata = task_instance.xcom_pull(task_ids='generate_molecules')
+
+    if not generation_metadata:
+        raise ValueError('Could not find metadata from generate_molecules task.')
+
+    datasets = generation_metadata.get('datasets', [])
+
+    if not datasets:
+        logging.info('No datasets selected for molecular property calculation.')
+        return {
+            **generation_metadata,
+            'datasets': [],
+        }
+
+    overwrite = _parse_bool(context['params'].get('overwrite', False))
+
+    processed_datasets = [
+        _calculate_properties_for_single_dataset(
+            dataset_metadata=dataset_metadata,
+            overwrite=overwrite,
+        )
+        for dataset_metadata in datasets
+    ]
+
+    return {
+        **generation_metadata,
+        'datasets': processed_datasets,
     }
