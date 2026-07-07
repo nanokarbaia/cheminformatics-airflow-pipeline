@@ -1,5 +1,7 @@
 """MS Teams alerting through an Airflow connection."""
 
+from __future__ import annotations
+
 import http
 import logging
 from urllib.parse import urlencode
@@ -10,7 +12,13 @@ from airflow.hooks.base import BaseHook
 WEBHOOK_CONN_ID = 'msteams_webhook'
 
 
-def get_webhook_url(conn_id=WEBHOOK_CONN_ID):
+def get_webhook_url(conn_id: str = WEBHOOK_CONN_ID) -> str:
+    """
+    Build webhook URL from an Airflow connection.
+
+    The connection is expected to be provided through the environment variable:
+    AIRFLOW_CONN_MSTEAMS_WEBHOOK
+    """
     conn = BaseHook.get_connection(conn_id)
 
     scheme = conn.conn_type or 'https'
@@ -28,50 +36,65 @@ def get_webhook_url(conn_id=WEBHOOK_CONN_ID):
     return url
 
 
-def send_teams_alert(context):
-    webhook_url = get_webhook_url()
+def send_teams_alert(context) -> None:
+    """
+    Send an MS Teams alert when an Airflow task fails.
 
-    dag_id = context['task_instance'].dag_id
-    task_id = context['task_instance'].task_id
+    This function is used as an Airflow on_failure_callback.
+    """
+    try:
+        webhook_url = get_webhook_url()
 
-    message = {
-        'type': 'message',
-        'attachments': [
-            {
-                'contentType': 'application/vnd.microsoft.card.adaptive',
-                'content': {
-                    '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',
-                    'type': 'AdaptiveCard',
-                    'version': '1.4',
-                    'body': [
+        task_instance = context['task_instance']
+        dag_id = task_instance.dag_id
+        task_id = task_instance.task_id
+        run_id = task_instance.run_id
+        try_number = task_instance.try_number
+        log_url = task_instance.log_url
+        exception = context.get('exception')
+
+        payload = {
+            '@type': 'MessageCard',
+            '@context': 'http://schema.org/extensions',
+            'summary': f'Airflow task failed: {dag_id}.{task_id}',
+            'title': '🚨 Airflow Task Failed',
+            'themeColor': 'D13438',
+            'sections': [
+                {
+                    'facts': [
+                        {'name': 'DAG', 'value': dag_id},
+                        {'name': 'Task', 'value': task_id},
+                        {'name': 'Run ID', 'value': run_id},
+                        {'name': 'Try number', 'value': str(try_number)},
                         {
-                            'type': 'TextBlock',
-                            'text': '🚨 Airflow task failed',
-                            'wrap': True,
-                            'weight': 'Bolder',
-                            'color': 'Attention',
-                            'size': 'Medium',
+                            'name': 'Exception',
+                            'value': str(exception) if exception else 'Unknown error',
                         },
-                        {
-                            'type': 'FactSet',
-                            'facts': [
-                                {'title': 'DAG', 'value': dag_id},
-                                {'title': 'Task', 'value': task_id},
-                            ],
-                        },
+                        {'name': 'Log URL', 'value': log_url},
                     ],
-                },
-            },
-        ],
-    }
+                    'markdown': True,
+                }
+            ],
+        }
 
-    response = requests.post(webhook_url, json=message, timeout=30)
-
-    if response.status_code == http.HTTPStatus.OK:
-        logging.info('Teams alert sent successfully')
-    else:
-        logging.error(
-            'Failed to send Teams alert: %s %s',
-            response.status_code,
-            response.text,
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=30,
         )
+
+        if response.status_code in (
+            http.HTTPStatus.OK,
+            http.HTTPStatus.ACCEPTED,
+        ):
+            logging.info('MS Teams alert sent successfully.')
+        else:
+            logging.error(
+                'Failed to send MS Teams alert: %s %s',
+                response.status_code,
+                response.text,
+            )
+
+    except Exception as exc:
+        logging.exception('Failed to send MS Teams alert. Error: %s', exc)
