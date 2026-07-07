@@ -1,0 +1,11 @@
+apache-airflow-providers-amazon>=9.0.0
+
+pandas>=2.2.0
+numpy>=2.0.0
+rdkit>=2024.9.0
+scikit-learn>=1.5.0
+pandera>=0.20.0
+
+psycopg2-binary>=2.9.9
+requests>=2.31.0
+ruff>=0.8.0
